@@ -1,0 +1,17 @@
+#cloud-config
+users:
+  - name: soyccan
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBe7mMOVkr4yj1LofG1u2Ncw0KiuvmrjMUGYAXxUjx+e nslab05.csie.ntu.edu.tw
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: sudo
+    shell: /bin/bash
+timezone: Asia/Taipei
+apt:
+  primary:
+    - arches: [default]
+      uri: http://tw.archive.ubuntu.com/ubuntu/
+packages:
+  - mpv
+mounts:
+  - ["/dev/vdc", "/mnt"]

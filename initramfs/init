@@ -1,0 +1,27 @@
+#!/bin/sh
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+mknod -m 666 /dev/ttyS0 c 4 64
+mdev -s
+
+echo
+echo "Boot took $(cut -d' ' -f1 /proc/uptime) seconds"
+echo
+
+echo "Switching root..."
+
+mkdir /newroot
+mount /dev/vda1 /newroot
+
+mount --move /sys /newroot/sys
+mount --move /proc /newroot/proc
+mount --move /dev /newroot/dev
+
+echo
+echo "Welcome to Ubuntu Cloud Image."
+uname -a
+echo
+
+exec switch_root /newroot /sbin/init
+

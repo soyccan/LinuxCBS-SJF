@@ -1,0 +1,29 @@
+From b18440433e821511242ad6a54eada3d4a9cabf29 Mon Sep 17 00:00:00 2001
+From: soyccan <soyccan@gmail.com>
+Date: Thu, 1 Dec 2022 10:15:26 +0800
+Subject: [PATCH] Project 1: Print EDF Params
+
+---
+ kernel/sched/deadline.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 147b757d1..6ee6c7490 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -2683,6 +2683,12 @@ int sched_dl_overflow(struct task_struct *p, int policy,
+ 	struct dl_bw *dl_b = dl_bw_of(cpu);
+ 	unsigned long cap;
+ 
++	pr_notice(
++		"SCHED_DEADLINE parameters set on pid %d: runtime=%lld, deadline=%lld, period=%lld",
++		task_pid_vnr(p), attr->sched_runtime, attr->sched_deadline,
++		attr->sched_period);
++	printk_trigger_flush();
++
+ 	if (attr->sched_flags & SCHED_FLAG_SUGOV)
+ 		return 0;
+ 
+-- 
+2.34.1
+
