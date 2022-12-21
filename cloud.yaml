@@ -13,5 +13,7 @@ apt:
       uri: http://tw.archive.ubuntu.com/ubuntu/
 packages:
   - mpv
+  - p7zip-full
+  - sysstat
 mounts:
   - ["/dev/vdc", "/mnt"]

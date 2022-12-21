@@ -1,0 +1,261 @@
+From 91c87328a73808b22b00c3e2fd61436798d150c5 Mon Sep 17 00:00:00 2001
+From: soyccan <soyccan@gmail.com>
+Date: Wed, 21 Dec 2022 19:51:59 +0800
+Subject: [PATCH] Project 2: SJF for Deadline Scheduler
+
+---
+ kernel/sched/core.c     |   6 +++
+ kernel/sched/deadline.c |  49 ++++++++++++++---
+ tools/setbw.c           | 115 ++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 163 insertions(+), 7 deletions(-)
+ create mode 100644 tools/setbw.c
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index 85be68468..ed0daf1b2 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -85,6 +85,8 @@ unsigned int sysctl_sched_rt_period = 1000000;
+ 
+ __read_mostly int scheduler_running;
+ 
++extern unsigned long long remain_bw;
++
+ #ifdef CONFIG_SCHED_CORE
+ 
+ DEFINE_STATIC_KEY_FALSE(__sched_core_enabled);
+@@ -7943,6 +7945,10 @@ SYSCALL_DEFINE4(sched_getattr, pid_t, pid, struct sched_attr __user *, uattr,
+ 	get_params(p, &kattr);
+ 	kattr.sched_flags &= SCHED_FLAG_ALL;
+ 
++	if (pid == 0)
++		// return system remaining bandwidth
++		kattr.sched_runtime = remain_bw;
++
+ #ifdef CONFIG_UCLAMP_TASK
+ 	/*
+ 	 * This could race with another potential updater, but this is fine
+diff --git a/kernel/sched/deadline.c b/kernel/sched/deadline.c
+index 6ee6c7490..f94855627 100644
+--- a/kernel/sched/deadline.c
++++ b/kernel/sched/deadline.c
+@@ -20,6 +20,8 @@
+ 
+ struct dl_bandwidth def_dl_bandwidth;
+ 
++unsigned long long remain_bw;
++
+ static inline struct task_struct *dl_task_of(struct sched_dl_entity *dl_se)
+ {
+ 	return container_of(dl_se, struct task_struct, dl);
+@@ -1472,13 +1474,19 @@ static inline bool __dl_less(struct rb_node *a, const struct rb_node *b)
+ 	return dl_time_before(__node_2_dle(a)->deadline, __node_2_dle(b)->deadline);
+ }
+ 
++static inline bool __sjf_less(struct rb_node *a, const struct rb_node *b)
++{
++	return dl_time_before(__node_2_dle(a)->runtime,
++			      __node_2_dle(b)->runtime);
++}
++
+ static void __enqueue_dl_entity(struct sched_dl_entity *dl_se)
+ {
+ 	struct dl_rq *dl_rq = dl_rq_of_se(dl_se);
+ 
+ 	BUG_ON(!RB_EMPTY_NODE(&dl_se->rb_node));
+ 
+-	rb_add_cached(&dl_se->rb_node, &dl_rq->root, __dl_less);
++	rb_add_cached(&dl_se->rb_node, &dl_rq->root, __sjf_less);
+ 
+ 	inc_dl_tasks(dl_se, dl_rq);
+ }
+@@ -2683,12 +2691,6 @@ int sched_dl_overflow(struct task_struct *p, int policy,
+ 	struct dl_bw *dl_b = dl_bw_of(cpu);
+ 	unsigned long cap;
+ 
+-	pr_notice(
+-		"SCHED_DEADLINE parameters set on pid %d: runtime=%lld, deadline=%lld, period=%lld",
+-		task_pid_vnr(p), attr->sched_runtime, attr->sched_deadline,
+-		attr->sched_period);
+-	printk_trigger_flush();
+-
+ 	if (attr->sched_flags & SCHED_FLAG_SUGOV)
+ 		return 0;
+ 
+@@ -2705,6 +2707,23 @@ int sched_dl_overflow(struct task_struct *p, int policy,
+ 	cpus = dl_bw_cpus(cpu);
+ 	cap = dl_bw_capacity(cpu);
+ 
++	pr_notice(
++		"sched_dl_overflow: pid=%8d  dl_policy=%d  task_has_dl_policy=%d\n",
++		task_pid_vnr(p), dl_policy(policy), task_has_dl_policy(p));
++	pr_notice("sched_dl_overflow: cap=%8lu  bw=%8llu  total_bw=%11llu\n",
++		  cap, dl_b->bw, dl_b->total_bw);
++
++	if (dl_policy(policy) && !task_has_dl_policy(p))
++		pr_notice(
++			"sched_dl_overflow: dl_overflow(old_bw=0, new_bw=%llu)=%d\n",
++			new_bw, __dl_overflow(dl_b, cap, 0, new_bw));
++
++	else if (dl_policy(policy) && task_has_dl_policy(p))
++		pr_notice(
++			"sched_dl_overflow: dl_overflow(old_bw=%llu, new_bw=%llu)=%d\n",
++			p->dl.dl_bw, new_bw,
++			__dl_overflow(dl_b, cap, p->dl.dl_bw, new_bw));
++
+ 	if (dl_policy(policy) && !task_has_dl_policy(p) &&
+ 	    !__dl_overflow(dl_b, cap, 0, new_bw)) {
+ 		if (hrtimer_active(&p->dl.inactive_timer))
+@@ -2732,6 +2751,17 @@ int sched_dl_overflow(struct task_struct *p, int policy,
+ 		 */
+ 		err = 0;
+ 	}
++
++	// record total remaining bandwidth
++	remain_bw = cap_scale(dl_b->bw, cap) - dl_b->total_bw;
++
++	pr_notice(
++		"sched_dl_overflow: remain_bw=  %6llu %6llu  total_bw=%11llu\n",
++		remain_bw,
++		(remain_bw * 1000000) >>
++			BW_SHIFT, /* unit converted from 2^-20 to 10^-6 */
++		dl_b->total_bw);
++
+ 	raw_spin_unlock(&dl_b->lock);
+ 
+ 	return err;
+@@ -2755,6 +2785,11 @@ void __setparam_dl(struct task_struct *p, const struct sched_attr *attr)
+ 	dl_se->flags = attr->sched_flags & SCHED_DL_FLAGS;
+ 	dl_se->dl_bw = to_ratio(dl_se->dl_period, dl_se->dl_runtime);
+ 	dl_se->dl_density = to_ratio(dl_se->dl_deadline, dl_se->dl_runtime);
++
++	pr_notice(
++		"SCHED_DEADLINE parameters set on pid %d: runtime=%lld deadline=%lld period=%lld\n\n",
++		task_pid_vnr(p), dl_se->dl_runtime, dl_se->dl_deadline,
++		dl_se->dl_period);
+ }
+ 
+ void __getparam_dl(struct task_struct *p, struct sched_attr *attr)
+diff --git a/tools/setbw.c b/tools/setbw.c
+new file mode 100644
+index 000000000..0da28c988
+--- /dev/null
++++ b/tools/setbw.c
+@@ -0,0 +1,115 @@
++// modified from: https://www.kernel.org/doc/html/latest/scheduler/sched-deadline.html
++#define _GNU_SOURCE
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++#include <linux/kernel.h>
++#include <linux/types.h>
++#include <linux/unistd.h>
++#include <pthread.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++#define SCHED_DEADLINE 6
++
++/* XXX use the proper syscall numbers */
++#ifdef __x86_64__
++#define __NR_sched_setattr 314
++#define __NR_sched_getattr 315
++#endif
++
++#ifdef __i386__
++#define __NR_sched_setattr 351
++#define __NR_sched_getattr 352
++#endif
++
++#ifdef __arm__
++#define __NR_sched_setattr 380
++#define __NR_sched_getattr 381
++#endif
++
++struct sched_attr {
++	__u32 size;
++
++	__u32 sched_policy;
++	__u64 sched_flags;
++
++	/* SCHED_NORMAL, SCHED_BATCH */
++	__s32 sched_nice;
++
++	/* SCHED_FIFO, SCHED_RR */
++	__u32 sched_priority;
++
++	/* SCHED_DEADLINE (nsec) */
++	__u64 sched_runtime;
++	__u64 sched_deadline;
++	__u64 sched_period;
++};
++
++int sched_setattr(pid_t pid, const struct sched_attr *attr, unsigned int flags)
++{
++	return syscall(__NR_sched_setattr, pid, attr, flags);
++}
++
++int sched_getattr(pid_t pid, struct sched_attr *attr, unsigned int size,
++		  unsigned int flags)
++{
++	return syscall(__NR_sched_getattr, pid, attr, size, flags);
++}
++
++int main(int argc, char **argv)
++{
++	int ret;
++	struct sched_attr attr;
++
++	// get system remaining bandwidth
++	ret = sched_getattr(0, &attr, sizeof(attr), 0);
++	if (ret < 0) {
++		perror("sched_getattr");
++		exit(-1);
++	}
++	__u64 remain_bw = attr.sched_runtime;
++
++	// get 7z pid
++	char pids[20];
++	FILE *fs = popen("pgrep 7z", "r");
++	if (!fs) {
++		perror("popen");
++		return -1;
++	}
++	fgets(pids, sizeof(pids), fs);
++	fclose(fs);
++	int _7z_pid = atoi(pids);
++
++	// get 7z bandwidth
++	ret = sched_getattr(_7z_pid, &attr, sizeof(attr), 0);
++	if (ret < 0) {
++		perror("sched_getattr");
++		return -1;
++	}
++	__u64 _7z_bw = (attr.sched_runtime << 20) / attr.sched_period;
++
++	printf("remain_bw = %llu, 7z_bw = %llu\n", remain_bw, _7z_bw);
++
++	// set 7z bandwidth to fully utilize CBS
++	attr.size = sizeof(attr);
++	attr.sched_flags = 0;
++	attr.sched_nice = 0;
++	attr.sched_priority = 0;
++
++	attr.sched_policy = SCHED_DEADLINE;
++	int pri = 1000;  // higher -> lower priority
++	attr.sched_runtime = (remain_bw + _7z_bw) * pri;
++	attr.sched_period = attr.sched_deadline = (1 << 20) * pri;
++
++	ret = sched_setattr(_7z_pid, &attr, 0);
++	if (ret < 0) {
++		perror("sched_setattr");
++		return -1;
++	}
++
++	return 0;
++}
+-- 
+2.34.1
+

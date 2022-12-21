@@ -53,13 +53,76 @@ function boot_ubuntu_cloud() {
         # -snapshot \
 }
 
-function ssh_connect() {
+function ssh_exec() {
     ssh-keygen -R "[localhost]:2222"
-    ssh soyccan@localhost -p 2222 -o StrictHostKeyChecking=no
+    ssh soyccan@localhost -p 2222 -o StrictHostKeyChecking=no -t "$@"
 }
 
-if [[ "$1" ]] && typeset -F "$1"; then
-    eval "$1"
+function bench_mpv() {
+    ssh_exec mpv --vo=null --ao=null --loop=inf /mnt/1080p.mp4
+}
+
+function bench_7z() {
+    ssh_exec 7z b 100 –md16
+}
+
+function mon_mpstat() {
+    ssh_exec mpstat 1
+}
+
+function mon_pidstat() {
+    ssh_exec pidstat 1 -t -p '$(pgrep mpv)'
+}
+
+function mon_htop() {
+    ssh_exec htop
+}
+
+function mon_dmesg() {
+    ssh_exec sudo dmesg -w
+}
+
+function chdl() {
+    local all_tasks=
+    if [[ "$1" = --all-tasks ]]; then
+        local all_tasks=--all-tasks
+        shift
+    fi
+
+    local proc="$1"
+    local runtime="$2"
+    local deadline="$3"
+    local period="$4"
+
+    if [[ ! "$proc" =~ ^[0-9]+$ ]]; then
+        local proc="\$(pidof $proc)"
+    fi
+
+	ssh_exec "sudo chrt \
+		--deadline \
+        $all_tasks \
+		--sched-runtime \$(numfmt --from auto $runtime) \
+		--sched-deadline \$(numfmt --from auto $deadline) \
+		--sched-period \$(numfmt --from auto $period) \
+		--pid 0 $proc"
+}
+
+function norm() {
+    local proc="$1"
+
+    if [[ ! "$proc" =~ ^[0-9]+$ ]]; then
+        local proc="\$(pidof $proc)"
+    fi
+
+	ssh_exec "sudo chrt --all-tasks --other --pid 0 $proc"
+}
+
+function poweroff() {
+    ssh_exec sudo poweroff
+}
+
+if [[ "$1" ]]; then
+    "$@"
 else
     boot_ubuntu_cloud
 fi
